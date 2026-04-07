@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
 """
 BinaCraft - a tiny binary sandbox and logic-circuit prototype.
-
-Features:
-- 2D sections made of binary cells
-- Built-in blocks: power, wire, switch, AND, OR, NOT
-- Reusable custom switches ("macros") defined with boolean expressions
-- Projects containing multiple sections
-- A compact Abstrang-like script language
-- JSON save/load
-- Terminal rendering
-- OS-aware screen clearing
 """
 
 from __future__ import annotations
@@ -43,8 +33,6 @@ class BoolExprError(ValueError):
     pass
 
 class BoolExpr:
-    """Safe boolean expression compiler for reusable custom switches."""
-
     def __init__(self, expression: str):
         self.expression = expression.strip()
         if not self.expression:
@@ -61,76 +49,41 @@ class BoolExpr:
         for node in ast.walk(tree):
             if not isinstance(node, _ALLOWED_BOOL_NODES):
                 raise BoolExprError(f"disallowed expression element: {type(node).__name__}")
-
             if isinstance(node, ast.Name):
                 if node.id not in {"N", "E", "S", "W", "ANY", "ALL", "A", "B", "C", "D"}:
                     raise BoolExprError(f"unknown symbol: {node.id}")
-
             if isinstance(node, ast.Constant):
                 if not isinstance(node.value, (bool, int)):
                     raise BoolExprError("only boolean/int constants are allowed")
-
         return tree
-
-    @staticmethod
-    def _to_bool(value: Any) -> bool:
-        return bool(int(value))
 
     def eval(self, values: Dict[str, int]) -> int:
         def walk(node: ast.AST) -> bool:
-            if isinstance(node, ast.Expression):
-                return walk(node.body)
-            if isinstance(node, ast.Constant):
-                return self._to_bool(node.value)
-            if isinstance(node, ast.Name):
-                return self._to_bool(values.get(node.id, 0))
-            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-                return not walk(node.operand)
+            if isinstance(node, ast.Expression): return walk(node.body)
+            if isinstance(node, ast.Constant): return bool(int(node.value))
+            if isinstance(node, ast.Name): return bool(int(values.get(node.id, 0)))
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not): return not walk(node.operand)
             if isinstance(node, ast.BoolOp):
                 if isinstance(node.op, ast.And):
-                    result = True
-                    for value in node.values:
-                        result = result and walk(value)
-                        if not result: break
-                    return result
+                    return all(walk(v) for v in node.values)
                 if isinstance(node.op, ast.Or):
-                    result = False
-                    for value in node.values:
-                        result = result or walk(value)
-                        if result: break
-                    return result
+                    return any(walk(v) for v in node.values)
             raise BoolExprError("unsupported expression")
         return int(walk(self._tree))
 
     def to_json(self) -> str:
         return self.expression
 
-    @classmethod
-    def from_json(cls, data: str) -> "BoolExpr":
-        return cls(data)
-
 # ---------------------------------------------------------------------------
 # Game model
 # ---------------------------------------------------------------------------
 
-KIND_EMPTY = "empty"
-KIND_POWER = "power"
-KIND_WIRE = "wire"
-KIND_SWITCH = "switch"
-KIND_AND = "and"
-KIND_OR = "or"
-KIND_NOT = "not"
-KIND_MACRO = "macro"
+KIND_EMPTY, KIND_POWER, KIND_WIRE, KIND_SWITCH = "empty", "power", "wire", "switch"
+KIND_AND, KIND_OR, KIND_NOT, KIND_MACRO = "and", "or", "not", "macro"
 
 KIND_CHARS = {
-    KIND_EMPTY: ".",
-    KIND_POWER: "P",
-    KIND_WIRE: "#",
-    KIND_SWITCH: "S",
-    KIND_AND: "A",
-    KIND_OR: "O",
-    KIND_NOT: "N",
-    KIND_MACRO: "M",
+    KIND_EMPTY: ".", KIND_POWER: "P", KIND_WIRE: "#", KIND_SWITCH: "S",
+    KIND_AND: "A", KIND_OR: "O", KIND_NOT: "N", KIND_MACRO: "M",
 }
 
 @dataclass
@@ -146,43 +99,25 @@ class Cell:
         if self.kind == KIND_SWITCH: return int(bool(self.state))
         if self.kind == KIND_WIRE: return int(any(section.neighbor_outputs(previous, x, y)))
         if self.kind == KIND_AND:
-            n = section.in_dir(previous, x, y, "N")
-            e = section.in_dir(previous, x, y, "E")
-            return int(bool(n) and bool(e))
+            return int(bool(section.in_dir(previous, x, y, "N")) and bool(section.in_dir(previous, x, y, "E")))
         if self.kind == KIND_OR:
-            n = section.in_dir(previous, x, y, "N")
-            e = section.in_dir(previous, x, y, "E")
-            s = section.in_dir(previous, x, y, "S")
-            w = section.in_dir(previous, x, y, "W")
-            return int(bool(n) or bool(e) or bool(s) or bool(w))
+            return int(any(bool(section.in_dir(previous, x, y, d)) for d in "NESW"))
         if self.kind == KIND_NOT:
-            n = section.in_dir(previous, x, y, "N")
-            return int(not bool(n))
+            return int(not bool(section.in_dir(previous, x, y, "N")))
         if self.kind == KIND_MACRO:
-            if not self.macro: return 0
-            macro = project.macros.get(self.macro)
-            if not macro: return 0
-            return macro.evaluate(section, x, y, previous, project)
+            if not self.macro or not (m := project.macros.get(self.macro)): return 0
+            return m.evaluate(section, x, y, previous, project)
         return 0
 
     def symbol(self, state: int) -> str:
-        if self.kind == KIND_EMPTY: return "."
-        if self.kind == KIND_SWITCH: return "T" if state else "t"
-        if self.kind == KIND_POWER: return "P"
-        if self.kind == KIND_WIRE: return "#" if state else ":"
-        if self.kind == KIND_AND: return "A" if state else "a"
-        if self.kind == KIND_OR: return "O" if state else "o"
-        if self.kind == KIND_NOT: return "N" if state else "n"
-        if self.kind == KIND_MACRO: return "M" if state else "m"
-        return "?"
+        chars = {KIND_EMPTY: ".", KIND_POWER: "P", KIND_SWITCH: "T" if state else "t",
+                 KIND_WIRE: "#" if state else ":", KIND_AND: "A" if state else "a",
+                 KIND_OR: "O" if state else "o", KIND_NOT: "N" if state else "n",
+                 KIND_MACRO: "M" if state else "m"}
+        return chars.get(self.kind, "?")
 
     def to_json(self) -> Dict[str, Any]:
         return {"kind": self.kind, "state": self.state, "macro": self.macro, "label": self.label}
-
-    @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> "Cell":
-        return cls(kind=data.get("kind", KIND_EMPTY), state=int(data.get("state", 0)),
-                   macro=data.get("macro"), label=data.get("label", ""))
 
 @dataclass
 class MacroDef:
@@ -191,16 +126,10 @@ class MacroDef:
     description: str = ""
 
     def evaluate(self, section: "Section", x: int, y: int, previous: List[List[int]], project: "Project") -> int:
-        values = section.inputs_dict(previous, x, y)
-        return int(self.expression.eval(values))
+        return self.expression.eval(section.inputs_dict(previous, x, y))
 
     def to_json(self) -> Dict[str, Any]:
         return {"name": self.name, "expression": self.expression.to_json(), "description": self.description}
-
-    @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> "MacroDef":
-        return cls(name=data["name"], expression=BoolExpr.from_json(data["expression"]),
-                   description=data.get("description", ""))
 
 @dataclass
 class Section:
@@ -216,95 +145,50 @@ class Section:
     def in_bounds(self, x: int, y: int) -> bool:
         return 0 <= x < self.width and 0 <= y < self.height
 
-    def cell(self, x: int, y: int) -> Cell:
-        if not self.in_bounds(x, y): raise IndexError(f"cell out of bounds: ({x}, {y})")
-        return self.grid[y][x]
-
-    def set_cell(self, x: int, y: int, cell: Cell) -> None:
-        if not self.in_bounds(x, y): raise IndexError(f"cell out of bounds: ({x}, {y})")
-        self.grid[y][x] = cell
-
     def place(self, x: int, y: int, kind: str, *, macro: Optional[str] = None, state: int = 0, label: str = "") -> None:
-        if kind not in {KIND_EMPTY, KIND_POWER, KIND_WIRE, KIND_SWITCH, KIND_AND, KIND_OR, KIND_NOT, KIND_MACRO}:
-            raise ValueError(f"unknown block kind: {kind}")
-        self.set_cell(x, y, Cell(kind=kind, state=int(state), macro=macro, label=label))
-
-    def toggle(self, x: int, y: int) -> None:
-        c = self.cell(x, y)
-        if c.kind != KIND_SWITCH: raise ValueError("only switches can be toggled")
-        c.state = 0 if c.state else 1
-
-    def set_switch(self, x: int, y: int, state: int) -> None:
-        c = self.cell(x, y)
-        if c.kind != KIND_SWITCH: raise ValueError("only switches can be set")
-        c.state = int(bool(state))
-
-    def neighbor_outputs(self, previous: List[List[int]], x: int, y: int) -> List[int]:
-        outs = []
-        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
-            nx, ny = x + dx, y + dy
-            if self.in_bounds(nx, ny): outs.append(int(previous[ny][nx]))
-        return outs
+        if not self.in_bounds(x, y): return
+        self.grid[y][x] = Cell(kind=kind, state=int(state), macro=macro, label=label)
 
     def in_dir(self, previous: List[List[int]], x: int, y: int, direction: str) -> int:
-        mapping = {"N": (0, -1), "E": (1, 0), "S": (0, 1), "W": (-1, 0)}
-        dx, dy = mapping[direction]
+        dx, dy = {"N": (0, -1), "E": (1, 0), "S": (0, 1), "W": (-1, 0)}[direction]
         nx, ny = x + dx, y + dy
-        return int(previous[ny][nx]) if self.in_bounds(nx, ny) else 0
+        return previous[ny][nx] if self.in_bounds(nx, ny) else 0
+
+    def neighbor_outputs(self, previous: List[List[int]], x: int, y: int) -> List[int]:
+        return [self.in_dir(previous, x, y, d) for d in "NESW"]
 
     def inputs_dict(self, previous: List[List[int]], x: int, y: int) -> Dict[str, int]:
-        n, e, s, w = [self.in_dir(previous, x, y, d) for d in "NESW"]
-        vals = {"N": n, "E": e, "S": s, "W": w, "A": n, "B": e, "C": s, "D": w}
-        vals["ANY"] = int(bool(n or e or s or w))
-        vals["ALL"] = int(bool(n and e and s and w))
-        return vals
+        d = {k: self.in_dir(previous, x, y, k) for k in "NESW"}
+        d.update({"ANY": int(any(d.values())), "ALL": int(all(d.values())),
+                  "A": d["N"], "B": d["E"], "C": d["S"], "D": d["W"]})
+        return d
 
     def snapshot(self) -> List[List[int]]:
         if self.last_state is not None: return [row[:] for row in self.last_state]
         return [[(1 if c.kind == KIND_POWER or (c.kind == KIND_SWITCH and c.state) else 0) for c in row] for row in self.grid]
 
     def tick(self, project: "Project") -> List[List[int]]:
-        previous = self.snapshot()
-        next_state = [[0 for _ in range(self.width)] for _ in range(self.height)]
-        for y in range(self.height):
-            for x in range(self.width):
-                next_state[y][x] = self.grid[y][x].output(self, x, y, previous, project)
-        return next_state
+        prev = self.snapshot()
+        return [[self.grid[y][x].output(self, x, y, prev, project) for x in range(self.width)] for y in range(self.height)]
 
     def step(self, project: "Project", count: int = 1) -> None:
-        for _ in range(max(0, int(count))):
-            self.last_state = self.tick(project)
+        for _ in range(max(0, count)): self.last_state = self.tick(project)
 
-    def render_kinds(self) -> str:
-        lines = [f"Section {self.name!r} [{self.width}x{self.height}] kinds:"]
-        for row in self.grid: lines.append(" ".join(KIND_CHARS.get(cell.kind, "?") for cell in row))
+    def render_mixed(self, project: "Project") -> str:
+        s, lines = self.snapshot(), [f"Section {self.name!r} [{self.width}x{self.height}]"]
+        for y, row in enumerate(self.grid):
+            lines.append(" ".join(c.symbol(c.output(self, x, y, s, project)) for x, c in enumerate(row)))
         return "\n".join(lines)
 
     def render_signals(self, project: "Project") -> str:
-        state = self.snapshot()
-        lines = [f"Section {self.name!r} [{self.width}x{self.height}] signals:"]
+        s, lines = self.snapshot(), [f"Section {self.name!r} signals:"]
         for y, row in enumerate(self.grid):
-            lines.append(" ".join(str(c.output(self, x, y, state, project)) for x, c in enumerate(row)))
-        return "\n".join(lines)
-
-    def render_mixed(self, project: "Project") -> str:
-        state = self.snapshot()
-        lines = [f"Section {self.name!r} [{self.width}x{self.height}]"]
-        for y, row in enumerate(self.grid):
-            lines.append(" ".join(c.symbol(c.output(self, x, y, state, project)) for x, c in enumerate(row)))
+            lines.append(" ".join(str(c.output(self, x, y, s, project)) for x, c in enumerate(row)))
         return "\n".join(lines)
 
     def to_json(self) -> Dict[str, Any]:
         return {"name": self.name, "width": self.width, "height": self.height,
                 "grid": [[cell.to_json() for cell in row] for row in self.grid]}
-
-    @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> "Section":
-        sec = cls(name=data["name"], width=int(data["width"]), height=int(data["height"]))
-        for y, row in enumerate(data.get("grid", [])[:sec.height]):
-            for x, cell_data in enumerate(row[:sec.width]):
-                sec.grid[y][x] = Cell.from_json(cell_data)
-        return sec
 
 @dataclass
 class Project:
@@ -312,128 +196,90 @@ class Project:
     sections: Dict[str, Section] = field(default_factory=dict)
     macros: Dict[str, MacroDef] = field(default_factory=dict)
 
-    def add_section(self, name: str, width: int, height: int) -> Section:
-        sec = Section(name=name, width=width, height=height)
-        self.sections[name] = sec
-        return sec
-
-    def get_section(self, name: str) -> Section:
-        return self.sections[name]
-
-    def define_macro(self, name: str, expression: str, description: str = "") -> MacroDef:
-        macro = MacroDef(name=name, expression=BoolExpr(expression), description=description)
-        self.macros[name] = macro
-        return macro
-
-    def to_json(self) -> Dict[str, Any]:
-        return {"name": self.name, "sections": {n: s.to_json() for n, s in self.sections.items()},
-                "macros": {n: m.to_json() for n, m in self.macros.items()}}
+    def save(self, path: str):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"name": self.name, "sections": {n: s.to_json() for n, s in self.sections.items()},
+                       "macros": {n: m.to_json() for n, m in self.macros.items()}}, f, indent=2)
 
     @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> "Project":
-        proj = cls(name=data["name"])
-        for n, sd in data.get("sections", {}).items(): proj.sections[n] = Section.from_json(sd)
-        for n, md in data.get("macros", {}).items(): proj.macros[n] = MacroDef.from_json(md)
-        return proj
-
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_json(), indent=2, ensure_ascii=False), encoding="utf-8")
-
-    @classmethod
-    def load(cls, path: str | Path) -> "Project":
-        return cls.from_json(json.loads(Path(path).read_text(encoding="utf-8")))
+    def load(cls, path: str) -> "Project":
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+            p = cls(d["name"])
+            for n, sd in d.get("sections", {}).items():
+                sec = Section(n, sd["width"], sd["height"])
+                for y, row in enumerate(sd["grid"]):
+                    for x, cd in enumerate(row): sec.grid[y][x] = Cell(**cd)
+                p.sections[n] = sec
+            for n, md in d.get("macros", {}).items():
+                p.macros[n] = MacroDef(n, BoolExpr(md["expression"]), md.get("description", ""))
+            return p
 
 # ---------------------------------------------------------------------------
-# Abstrang Interpreter
+# Interpreter
 # ---------------------------------------------------------------------------
-
-class ScriptError(RuntimeError): pass
 
 class AbstrangInterpreter:
-    def __init__(self):
-        self.project: Optional[Project] = None
+    def __init__(self): self.project: Optional[Project] = None
+    def _clear(self): os.system('cls' if os.name == 'nt' else 'clear')
 
-    def _clear_screen(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-    def run_line(self, line: str) -> None:
-        tokens = line.replace("=", " = ").split()
-        if not tokens: return
-        cmd = tokens[0].lower()
-
-        if cmd == "clear":
-            self._clear_screen()
-            return
-        if cmd == "help":
-            print(self.help_text()); return
-        if cmd == "project":
-            self.project = Project(tokens[1])
-            print(f"created project {tokens[1]!r}"); return
-        
-        if self.project is None: raise ScriptError("create or load a project first")
-
-        if cmd == "section":
-            self.project.add_section(tokens[1], int(tokens[2]), int(tokens[3]))
-            print(f"added section {tokens[1]!r}"); return
-        if cmd in {"define", "switchdef"}:
-            eq = tokens.index("=")
-            self.project.define_macro(tokens[1], " ".join(tokens[eq+1:]))
-            print(f"defined macro {tokens[1]!r}"); return
-        if cmd == "place":
-            sec = self.project.get_section(tokens[1])
-            kind = tokens[4].lower()
-            st, mc, lb = 0, None, ""
-            extra = [t.lower() for t in tokens[5:]]
-            if kind == KIND_SWITCH and extra: st = 1 if extra[0] in {"on", "1"} else 0
-            elif kind == KIND_MACRO: mc = tokens[5]
-            elif extra: lb = " ".join(tokens[5:])
-            sec.place(int(tokens[2]), int(tokens[3]), kind, macro=mc, state=st, label=lb)
-            print(f"placed {kind} at ({tokens[2]},{tokens[3]})"); return
-        if cmd == "toggle":
-            self.project.get_section(tokens[1]).toggle(int(tokens[2]), int(tokens[3]))
-            print("toggled"); return
-        if cmd == "tick":
-            cnt = int(tokens[2]) if len(tokens) == 3 else 1
-            self.project.get_section(tokens[1]).step(self.project, cnt)
-            print(f"advanced {cnt} tick(s)"); return
-        if cmd == "show":
-            print(self.project.get_section(tokens[1]).render_mixed(self.project)); return
-        if cmd == "signals":
-            print(self.project.get_section(tokens[1]).render_signals(self.project)); return
-        if cmd == "save":
-            self.project.save(tokens[1]); print("saved"); return
-        if cmd == "load":
-            self.project = Project.load(tokens[1]); print("loaded"); return
-        if cmd == "list":
-            print(self.list_project()); return
-        raise ScriptError(f"unknown command: {cmd}")
-
-    def help_text(self) -> str:
-        return "project NAME, section NAME W H, define NAME = EXPR, place SEC X Y KIND, tick SEC [N], show SEC, signals SEC, clear, list, save/load FILE, quit"
-
-    def list_project(self) -> str:
-        if not self.project: return "(no project)"
-        return f"Project: {self.project.name}\nSections: {list(self.project.sections.keys())}\nMacros: {list(self.project.macros.keys())}"
-
-# ---------------------------------------------------------------------------
-# Main / REPL
-# ---------------------------------------------------------------------------
-
-def repl() -> None:
-    interp = AbstrangInterpreter()
-    print("BinaCraft REPL (type 'help' or 'quit')")
-    while True:
+    def run_line(self, line: str):
+        t = line.replace("=", " = ").split()
+        if not t: return
+        cmd = t[0].lower()
+        if cmd == "clear": self._clear(); return
+        if cmd == "help": print("project, section, define, place, tick, show, signals, clear, save, load, quit"); return
+        if cmd == "project": self.project = Project(t[1]); print(f"Project {t[1]} created"); return
+        if not self.project: print("Error: No project"); return
         try:
-            line = input(">> ").strip()
-            if not line: continue
-            if line.lower() in {"quit", "exit"}: break
-            interp.run_line(line)
-        except EOFError: break
-        except Exception as e: print(f"error: {e}")
+            if cmd == "section": self.project.sections[t[1]] = Section(t[1], int(t[2]), int(t[3])); print(f"Section {t[1]} added")
+            elif cmd == "define": self.project.macros[t[1]] = MacroDef(t[1], BoolExpr(" ".join(t[t.index("=")+1:])))
+            elif cmd == "place":
+                sec = self.project.sections[t[1]]
+                kind, mc, st = t[4].lower(), (t[5] if t[4].lower() == "macro" else None), (1 if "on" in t[5:] else 0)
+                sec.place(int(t[2]), int(t[3]), kind, macro=mc, state=st)
+            elif cmd == "tick": self.project.sections[t[1]].step(self.project, int(t[2]) if len(t)>2 else 1)
+            elif cmd == "show": print(self.project.sections[t[1]].render_mixed(self.project))
+            elif cmd == "signals": print(self.project.sections[t[1]].render_signals(self.project))
+            elif cmd == "save": self.project.save(t[1])
+            elif cmd == "load": self.project = Project.load(t[1])
+        except Exception as e: print(f"Error: {e}")
 
-if __name__ == "__main__":
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+DEMO = """
+project BinaCraft
+section main 12 6
+define XOR = (N and not E) or (not N and E)
+place main 1 1 power
+place main 2 1 wire
+place main 3 1 switch on
+place main 4 1 and
+place main 5 1 or
+place main 6 1 not
+place main 7 1 macro XOR
+tick main 1
+show main
+"""
+
+def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--repl", action="store_true")
+    parser.add_argument("--demo", action="store_true")
     args = parser.parse_args()
-    repl() if args.repl or sys.stdin.isatty() else None
+    interp = AbstrangInterpreter()
+    if args.demo:
+        for l in DEMO.strip().splitlines(): interp.run_line(l)
+    else:
+        print("BinaCraft REPL ('help' for info)"); 
+        while True:
+            try:
+                l = input(">> ").strip()
+                if l.lower() in {"quit", "exit"}: break
+                interp.run_line(l)
+            except (EOFError, KeyboardInterrupt): break
+
+if __name__ == "__main__": main()
