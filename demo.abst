@@ -1,0 +1,24 @@
+# プロジェクトと基板(12x6)の作成
+project BinaCraft
+section main 12 6
+
+# XORゲートの論理式を定義 (北からの入力と東からの入力を使用)
+define XOR = (N and not E) or (not N and E)
+
+# 各種ブロックの配置
+place main 1 1 power
+place main 2 1 wire
+place main 3 1 switch on
+place main 4 1 and
+place main 5 1 or
+place main 6 1 not
+place main 7 1 macro XOR
+
+# シミュレーションを1ステップ進める
+tick main 1
+
+# 回路図を表示
+show main
+
+# 信号の強さ(0/1)を表示
+signals main
